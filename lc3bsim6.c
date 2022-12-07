@@ -1032,8 +1032,8 @@ void MEM_stage() {
     v_mem_br_stall = Get_MEM_BR_STALL(PS.MEM_CS) & PS.MEM_V;
 
     /* Load Signals */
-    int v_mem_ld_cc = Get_MEM_LD_CC(PS.MEM_CS) & PS.MEM_V;
-    int v_mem_ld_reg = Get_MEM_LD_REG(PS.MEM_CS) & PS.MEM_V;
+    int v_mem_ld_cc = Get_MEM_LD_CC(PS.MEM_CS) && PS.MEM_V;
+    int v_mem_ld_reg = Get_MEM_LD_REG(PS.MEM_CS) && PS.MEM_V;
 
     /* Set globals for next stage */
     TRAP_PC = trap_pc;
@@ -1165,21 +1165,21 @@ void AGEX_stage() {
             ALU_out = SR1 << amount;
         } else if (bit5 == 0){
             /* Perform logical right shift */
-            ALU_out = SR1 >> amount;
+            int shifted_value = SR1 >> amount;
+            ALU_out = sign_extend(shifted_value, 15-amount);
         } else {
             /* Perform arithmetic right shift */
-            int shifted_value = SR1 >> amount;
-            shifted_value = sign_extend(shifted_value, 15-amount);
+            ALU_out = SR1 >> amount;
         }
     }
     ALU_out = Low16bits(ALU_out);
 
     /* Stall Signal */
-    v_agex_br_stall = PS.AGEX_V & Get_AGEX_BR_STALL(PS.AGEX_CS);
+    v_agex_br_stall = PS.AGEX_V && Get_AGEX_BR_STALL(PS.AGEX_CS);
 
     /* Set global load signals */
-    V_AGEX_LD_CC = PS.AGEX_V & Get_AGEX_LD_CC(PS.AGEX_CS);
-    V_AGEX_LD_REG = PS.AGEX_V & Get_AGEX_LD_REG(PS.AGEX_CS);
+    V_AGEX_LD_CC = PS.AGEX_V && Get_AGEX_LD_CC(PS.AGEX_CS);
+    V_AGEX_LD_REG = PS.AGEX_V && Get_AGEX_LD_REG(PS.AGEX_CS);
 
     LD_MEM = !mem_stall;        
     if (LD_MEM) {
@@ -1287,7 +1287,7 @@ void DE_stage() {
     }
 
     /* Branch Stall Signal */ 
-    v_de_br_stall = Get_DE_BR_STALL(CONTROL_STORE[CONTROL_STORE_ADDRESS]) & PS.DE_V;
+    v_de_br_stall = Get_DE_BR_STALL(CONTROL_STORE[CONTROL_STORE_ADDRESS]) && PS.DE_V;
     
     LD_AGEX = !mem_stall;
     if (LD_AGEX) {
