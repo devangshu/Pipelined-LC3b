@@ -890,6 +890,26 @@ int sr_reg_data,
     v_sr_ld_reg,
     sr_reg_id;
 
+int sign_extend(int num, int sign_bit_location){
+    int inverter = 0;
+    int i;
+
+    if(get_desired_bit(num, sign_bit_location) == 0){
+        return num; /* already extended */
+    }
+
+    for(i = 0; i <= sign_bit_location; i++){
+        inverter = ((inverter << 1) | 0x01);
+    }
+
+    int sign_extended = ~((num ^ inverter) + 1) + 1;
+    return sign_extended;
+}
+
+int get_desired_bit(int instruction, int bit){
+	int desired_bit = (instruction >> bit) & 0x01; /* isolate desired bit only */
+	return desired_bit;
+}
 
 /************************* SR_stage() *************************/
 void SR_stage() {
@@ -928,48 +948,255 @@ void SR_stage() {
 
 
 /************************* MEM_stage() *************************/
+/* Globals for output to next stage */
+int TRAP_PC, TARGET_PC, MEM_PC_MUX, V_MEM_LD_CC, V_MEM_LD_REG;
 void MEM_stage() {
 
-  int ii,jj = 0;
+    int ii,jj = 0;
+    int mem_w0, mem_w1 = 0;
+    int data, trap_pc, dcache_r;
   
-  /* your code for MEM stage goes here */
+    /* V.DCACHE.EN logic */
+    int dcache_enable = Get_DCACHE_EN(PS.MEM_CS) & PS.MEM_V;
 
+    /* D-Cache Data input Logic block */
+    if(Get_DATA_SIZE(PS.MEM_CS) == 1){
+        /* Read Byte */
+        data = PS.MEM_ALU_RESULT;
+    } else {
+        /* Read Word */
+        data = ((PS.MEM_ALU_RESULT << 8) & 0xFF00) | (PS.MEM_ALU_RESULT & 0x00FF);
+    }
 
+    /* WE Logic */
+    if(Get_DCACHE_RW(PS.MEM_CS) == 1){
+        if(Get_DATA_SIZE(PS.MEM_CS) == 1){
+            /* writing whole word */
+            mem_w0 = 1;
+            mem_w1 = 1;
+        } else {
+            if((PS.MEM_ADDRESS & 0b01) == 1){
+                /* writing MSB */
+                mem_w0 = 0;
+                mem_w1 = 1;
+            } else {
+                /* writing LSB */
+                mem_w0 = 1;
+                mem_w1 = 0;
+            }
+        }
+    } 
 
+    /* D-Cache R Generation and Cache Access */
+    if(dcache_enable == 1){
+        dcache_access(PS.MEM_ADDRESS, &trap_pc, data, &dcache_r, mem_w1, mem_w1);
+    } else {
+        trap_pc = 0;
+    }
 
-  
-  /* The code below propagates the control signals from MEM.CS latch
-     to SR.CS latch. You still need to latch other values into the
-     other SR latches. */
-  for (ii=COPY_SR_CS_START; ii < NUM_MEM_CS_BITS; ii++) {
-    NEW_PS.SR_CS [jj++] = PS.MEM_CS [ii];
-  }
+    /* D-Cache output to TRAP.PC logic block, accounts for byte read */
+    if(Get_DATA_SIZE(PS.MEM_CS) == 0){
+        if((PS.MEM_ADDRESS & 0b01) == 0){
+            /* reading LSB */
+            trap_pc = sign_extend((trap_pc & 0x00FF), 7);
+        } else {
+            /* reading MSB */
+            trap_pc = sign_extend(((trap_pc >> 8) & 0x00FF),7);
+        }
+    }    
+    trap_pc = Low16bits(trap_pc);
+
+    /* Branch Logic */
+    int mem_pc_mux = 0; /* default to pc <- pc + 2 select */
+
+    if(PS.MEM_V == 1){
+        if(Get_BR_OP(PS.MEM_CS) == 1){
+            /* Check for NZP bits */
+            int n_match = (PS.MEM_IR & 0x0800) && (PS.MEM_CC & 0x0004);
+            int z_match = (PS.MEM_IR & 0x0400) && (PS.MEM_CC & 0x0002);
+            int p_match = (PS.MEM_IR & 0x0200) && (PS.MEM_CC & 0x0001); 
+            if(n_match || z_match || p_match){
+                mem_pc_mux = 1;
+            }
+        } else if (Get_UNCOND_OP(PS.MEM_CS)){
+            mem_pc_mux = 1;            
+        } else if (Get_TRAP_OP(PS.MEM_CS)){
+            mem_pc_mux = 2;
+        }
+    }
+
+    /* Stall Signals */
+    mem_stall = (!dcache_r) && dcache_enable;
+    v_mem_br_stall = Get_MEM_BR_STALL(PS.MEM_CS) & PS.MEM_V;
+
+    /* Load Signals */
+    int v_mem_ld_cc = Get_MEM_LD_CC(PS.MEM_CS) & PS.MEM_V;
+    int v_mem_ld_reg = Get_MEM_LD_REG(PS.MEM_CS) & PS.MEM_V;
+
+    /* Set globals for next stage */
+    TRAP_PC = trap_pc;
+    TARGET_PC = PS.MEM_ADDRESS;
+    MEM_PC_MUX = mem_pc_mux;
+    V_MEM_LD_CC = v_mem_ld_cc;
+    V_MEM_LD_REG = v_mem_ld_reg;
+
+    /* The code below propagates the control signals from MEM.CS latch
+        to SR.CS latch. You still need to latch other values into the
+        other SR latches. */
+
+    NEW_PS.SR_NPC = PS.MEM_NPC;
+    NEW_PS.SR_DATA = trap_pc;
+    NEW_PS.SR_ALU_RESULT = PS.MEM_ALU_RESULT;
+    NEW_PS.SR_ADDRESS = PS.MEM_ADDRESS;
+    NEW_PS.SR_IR = PS.MEM_IR;
+    NEW_PS.SR_DRID = PS.MEM_DRID;
+    NEW_PS.SR_V = PS.MEM_V && !mem_stall;
+
+    for (ii=COPY_SR_CS_START; ii < NUM_MEM_CS_BITS; ii++) {
+        NEW_PS.SR_CS [jj++] = PS.MEM_CS [ii];
+    }
 
 }
 
 
 /************************* AGEX_stage() *************************/
+/* Globals for output to next stage */
+int V_AGEX_LD_CC, V_AGEX_LD_REG;
 void AGEX_stage() {
 
-  int ii, jj = 0;
-  int LD_MEM; /* You need to write code to compute the value of LD.MEM
-		 signal */
+    int ii, jj = 0;
+    int LD_MEM; /* You need to write code to compute the value of LD.MEM signal */
 
-  /* your code for AGEX stage goes here */
+    /* Compute Address */
+    int address, addr1, addr2;
+    if(Get_ADDRESSMUX(PS.AGEX_CS) == 1){
+        /* Using Address Adder */
+        int addr1mux = Get_ADDR1MUX(PS.AGEX_CS);
+        int addr2mux = Get_ADDR2MUX(PS.AGEX_CS);
 
-  
+        /* Get addr1 */
+        if(addr1mux == 1){
+            addr1 = PS.AGEX_SR1;
+        } else {
+            addr1 = PS.AGEX_NPC;
+        }
 
-  if (LD_MEM) {
-    /* Your code for latching into MEM latches goes here */
-    
+        /* Get addr2 */
+        switch (addr2mux){
+        case 0:
+            addr2 = 0;
+            break;
+        
+        case 1:
+            addr2 = sign_extend((PS.AGEX_IR & 0x003F), 5);
+            break;
+        
+        case 2:
+            addr2 = sign_extend((PS.AGEX_IR & 0x01FF), 8);
+            break;
 
+        case 3:
+            addr2 = sign_extend((PS.AGEX_IR & 0x07FF), 10);
+            break;
 
-    /* The code below propagates the control signals from AGEX.CS latch
-       to MEM.CS latch. */
-    for (ii = COPY_MEM_CS_START; ii < NUM_AGEX_CS_BITS; ii++) {
-      NEW_PS.MEM_CS [jj++] = PS.AGEX_CS [ii]; 
+        default:
+            break;
+        }
+
+        /* Account for LSHF1 */
+        if(Get_LSHF1(PS.AGEX_CS) == 1){
+            addr2 = addr2 << 1;
+        }
+
+        address = addr1 + addr2;
+    } else {
+        /* Getting address from IR */
+        address = (PS.AGEX_IR & 0x00FF) << 1;
     }
-  }
+    address = Low16bits(address);
+    
+    /* Compute ALU/SHF Result */
+    int ALU_out, SR1, SR2;
+    SR1 = sign_extend(PS.AGEX_SR1, 15); 
+
+    if(Get_ALU_RESULTMUX(PS.AGEX_CS)){
+        /* Get Result from ALU output */
+        if(Get_SR2MUX(PS.AGEX_CS) == 1){
+            /* Get SR2 from IR */
+            SR2 = sign_extend((PS.AGEX_IR & 0x001F), 4);
+        } else {
+            SR2 = sign_extend(PS.AGEX_SR2, 15);
+        }
+
+        /* Perfrom ALU functions */
+        switch (Get_ALUK(PS.AGEX_CS)){
+        case 0:
+            /* Add */
+            ALU_out = SR1 + SR2;
+            break;
+
+        case 1:
+            /* And */
+            ALU_out = SR1 & SR2;
+            break;
+        
+        case 2:
+            /* XOR */
+            ALU_out = SR1 ^ SR2;
+            break;
+        
+        case 3:
+            /* Passa */
+            ALU_out = SR2;
+        
+        default:
+            break;
+        }
+    } else {
+        /* Get Result from SHF output */
+        int bit4 = get_desired_bit(PS.AGEX_IR, 4);
+        int bit5 = get_desired_bit(PS.AGEX_IR, 5);
+        int amount = PS.AGEX_IR & 0X000F;
+
+        if(bit4 == 0){
+            /* Perform left shift */
+            ALU_out = SR1 << amount;
+        } else if (bit5 == 0){
+            /* Perform logical right shift */
+            ALU_out = SR1 >> amount;
+        } else {
+            /* Perform arithmetic right shift */
+            int shifted_value = SR1 >> amount;
+            shifted_value = sign_extend(shifted_value, 15-amount);
+        }
+    }
+    ALU_out = Low16bits(ALU_out);
+
+    /* Stall Signal */
+    v_agex_br_stall = PS.AGEX_V & Get_AGEX_BR_STALL(PS.AGEX_CS);
+
+    /* Set global load signals */
+    V_AGEX_LD_CC = PS.AGEX_V & Get_AGEX_LD_CC(PS.AGEX_CS);
+    V_AGEX_LD_REG = PS.AGEX_V & Get_AGEX_LD_REG(PS.AGEX_CS);
+
+    LD_MEM = !mem_stall;        
+    if (LD_MEM) {
+        /* Your code for latching into MEM latches goes here */
+        
+        NEW_PS.MEM_ADDRESS = address;
+        NEW_PS.MEM_NPC = PS.AGEX_NPC;
+        NEW_PS.MEM_CC = PS.AGEX_CC;
+        NEW_PS.MEM_ALU_RESULT = ALU_out;
+        NEW_PS.MEM_IR = PS.AGEX_IR;
+        NEW_PS.MEM_V = PS.AGEX_V;
+
+        /* The code below propagates the control signals from AGEX.CS latch
+        to MEM.CS latch. */
+        for (ii = COPY_MEM_CS_START; ii < NUM_AGEX_CS_BITS; ii++) {
+        NEW_PS.MEM_CS [jj++] = PS.AGEX_CS [ii]; 
+        }
+    }
+
 }
 
 
@@ -977,31 +1204,105 @@ void AGEX_stage() {
 /************************* DE_stage() *************************/
 void DE_stage() {
 
-  int CONTROL_STORE_ADDRESS;  /* You need to implement the logic to
-			         set the value of this variable. Look
-			         at the figure for DE stage */ 
-  int ii, jj = 0;
-  int LD_AGEX; /* You need to write code to compute the value of
-		  LD.AGEX signal */
+    int CONTROL_STORE_ADDRESS;  /* You need to implement the logic to
+                        set the value of this variable. Look
+                        at the figure for DE stage */ 
+    int ii, jj = 0;
+    int LD_AGEX; /* You need to write code to compute the value of
+            LD.AGEX signal */
 
-  /* your code for DE stage goes here */
-
-  
-
-
-
-  if (LD_AGEX) {
-    /* Your code for latching into AGEX latches goes here */
-    
-
-
-
-    /* The code below propagates the control signals from the CONTROL
-       STORE to the AGEX.CS latch. */
-    for (ii = COPY_AGEX_CS_START; ii< NUM_CONTROL_STORE_BITS; ii++) {
-      NEW_PS.AGEX_CS[jj++] = CONTROL_STORE[CONTROL_STORE_ADDRESS][ii];
+    /* Isolate and evaluate the two source registers */
+    int SR1, SR1_val, SR2, SR2_val;
+    SR1 = (PS.DE_IR >> 6) & 0b0111;
+    SR1_val = REGS[SR1];
+    if(get_desired_bit(PS.DE_IR, 13) == 1){
+        /* SR2.IDMUX Select line, used only for STB and STW instructions */
+        SR2 = (PS.DE_IR >> 9) & 0b0111;
+    } else {
+        SR2 = PS.DE_IR & 0b0111;
     }
-  }
+    SR2_val = REGS[SR2];
+
+    if(v_sr_ld_reg){
+        REGS[PS.SR_DRID] = sr_reg_data;
+    }
+
+    /* Save CC for AGEX and check for load signal */
+    int condition_codes = P | (Z << 1) | (N << 2);
+
+    if(v_sr_ld_cc){
+        N = sr_n; Z = sr_z; P = sr_p;
+    }
+
+    /* Compute Control Store Address */
+    int rowaddr = (PS.DE_IR & 0xF800) >> 10; 
+    int coladdr = (PS.DE_IR & 0x0020) >> 5;
+    CONTROL_STORE_ADDRESS = rowaddr | coladdr;
+
+    /* Compute DR for AGEX */
+    int agex_dr;
+    if(Get_DRMUX(CONTROL_STORE[CONTROL_STORE_ADDRESS]) == 1){
+        agex_dr = 7;
+    } else {
+        agex_dr = (PS.DE_IR >> 9) & 0b0111;
+    }
+
+    /* Dependency Check Logic */
+    dep_stall = 0; /* fail-safe assumption is there is no dependency hold */
+    if(PS.DE_V){
+        int brop_req = Get_DE_BR_OP(CONTROL_STORE[CONTROL_STORE_ADDRESS]);
+        int sr1_req = Get_SR1_NEEDED(CONTROL_STORE[CONTROL_STORE_ADDRESS]);
+        int sr2_req = Get_SR2_NEEDED(CONTROL_STORE[CONTROL_STORE_ADDRESS]); 
+
+        if (brop_req){
+            /* If branching make sure CCs are valid */
+            if(V_AGEX_LD_CC || V_MEM_LD_CC || v_sr_ld_cc){
+                dep_stall = 1;
+            }
+        }
+
+        if(V_AGEX_LD_REG){
+            /* Check DR for instruction in AGEX stage */
+            if((PS.AGEX_DRID == SR1) || (PS.AGEX_DRID == SR2)){
+                dep_stall = 1;
+            }
+        }
+
+        if(V_MEM_LD_REG){
+            /* Check DR for instruction in MEM stage */
+            if((PS.MEM_DRID == SR1) || (PS.MEM_DRID == SR2)){
+                dep_stall = 1;
+            }
+        }
+
+        if(v_sr_ld_reg){
+            /* Check DR for instruction in SR stage */
+            if((PS.SR_DRID == SR1) || (PS.SR_DRID == SR2)){
+                dep_stall = 1;
+            }
+        }
+    }
+
+    /* Branch Stall Signal */ 
+    v_de_br_stall = Get_DE_BR_STALL(CONTROL_STORE[CONTROL_STORE_ADDRESS]) & PS.DE_V;
+    
+    LD_AGEX = !mem_stall;
+    if (LD_AGEX) {
+        /* Your code for latching into AGEX latches goes here */
+        NEW_PS.AGEX_NPC = PS.DE_NPC; 
+        NEW_PS.AGEX_IR = PS.DE_IR; 
+        NEW_PS.AGEX_SR1 = SR1_val; 
+        NEW_PS.AGEX_SR2 = SR2_val; 
+        NEW_PS.AGEX_CC = condition_codes; 
+        NEW_PS.AGEX_DRID = agex_dr; 
+        NEW_PS.AGEX_V = !dep_stall && PS.DE_V;
+
+        /* The code below propagates the control signals from the CONTROL
+        STORE to the AGEX.CS latch. */
+        for (ii = COPY_AGEX_CS_START; ii< NUM_CONTROL_STORE_BITS; ii++) {
+        NEW_PS.AGEX_CS[jj++] = CONTROL_STORE[CONTROL_STORE_ADDRESS][ii];
+        }
+    }
 
 }
 
@@ -1009,8 +1310,39 @@ void DE_stage() {
 
 /************************* FETCH_stage() *************************/
 void FETCH_stage() {
+    
+    /* Perform I Cache access */
+    int IR;
+    icache_access(PC, &IR, &icache_r);
 
-  /* your code for FETCH stage goes here */
+    /* Evaluate PC Mux */
+    int temp_pc;
+    
+    switch (MEM_PC_MUX) {
+    case 0:
+        temp_pc = PC + 2;
+        break;
+    case 1:
+        temp_pc = TARGET_PC;
+        break;
+    case 2:
+        temp_pc = TRAP_PC;
+        break;
+    default:
+        break;
+    }    
 
+    /* Evaluate and Implement LD.PC signal */
+    int stalled = dep_stall || v_de_br_stall || v_agex_br_stall || v_mem_br_stall || mem_stall;
+    if((v_mem_br_stall && MEM_PC_MUX) || ((!stalled) && icache_r)){
+        PC = temp_pc;
+    }
 
+    /* Evaluate and implement LD.DE signal */
+    int de_v = (!stalled) && icache_r;
+    if(!mem_stall && !dep_stall){
+        NEW_PS.DE_NPC = PC + 2;
+        NEW_PS.DE_IR = IR;
+        NEW_PS.DE_V =  de_v;
+    }
 }  
