@@ -889,6 +889,10 @@ int sr_reg_data,
     v_sr_ld_cc,
     v_sr_ld_reg,
     sr_reg_id;
+int get_desired_bit(int instruction, int bit){
+	int desired_bit = (instruction >> bit) & 0x01; /* isolate desired bit only */
+	return desired_bit;
+}
 
 int sign_extend(int num, int sign_bit_location){
     int inverter = 0;
@@ -906,10 +910,7 @@ int sign_extend(int num, int sign_bit_location){
     return sign_extended;
 }
 
-int get_desired_bit(int instruction, int bit){
-	int desired_bit = (instruction >> bit) & 0x01; /* isolate desired bit only */
-	return desired_bit;
-}
+
 
 /************************* SR_stage() *************************/
 void SR_stage() {
@@ -953,7 +954,8 @@ int TRAP_PC, TARGET_PC, MEM_PC_MUX, V_MEM_LD_CC, V_MEM_LD_REG;
 void MEM_stage() {
 
     int ii,jj = 0;
-    int mem_w0, mem_w1 = 0;
+    int mem_w0 = 0;
+    int mem_w1 = 0;
     int data, trap_pc, dcache_r;
   
     /* V.DCACHE.EN logic */
@@ -989,7 +991,7 @@ void MEM_stage() {
 
     /* D-Cache R Generation and Cache Access */
     if(dcache_enable == 1){
-        dcache_access(PS.MEM_ADDRESS, &trap_pc, data, &dcache_r, mem_w1, mem_w1);
+        dcache_access(PS.MEM_ADDRESS, &trap_pc, data, &dcache_r, mem_w0, mem_w1);
     } else {
         trap_pc = 0;
     }
@@ -1263,21 +1265,21 @@ void DE_stage() {
 
         if(V_AGEX_LD_REG){
             /* Check DR for instruction in AGEX stage */
-            if((PS.AGEX_DRID == SR1) || (PS.AGEX_DRID == SR2)){
+            if((sr1_req && PS.AGEX_DRID == SR1) || (sr2_req && PS.AGEX_DRID == SR2)){
                 dep_stall = 1;
             }
         }
 
         if(V_MEM_LD_REG){
             /* Check DR for instruction in MEM stage */
-            if((PS.MEM_DRID == SR1) || (PS.MEM_DRID == SR2)){
+            if((sr1_req && PS.MEM_DRID == SR1) || (sr2_req && PS.MEM_DRID == SR2)){
                 dep_stall = 1;
             }
         }
 
         if(v_sr_ld_reg){
             /* Check DR for instruction in SR stage */
-            if((PS.SR_DRID == SR1) || (PS.SR_DRID == SR2)){
+            if((sr1_req && PS.SR_DRID == SR1) || (sr2_req && PS.SR_DRID == SR2)){
                 dep_stall = 1;
             }
         }
