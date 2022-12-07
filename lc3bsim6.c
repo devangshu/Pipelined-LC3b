@@ -1191,6 +1191,7 @@ void AGEX_stage() {
         NEW_PS.MEM_ALU_RESULT = ALU_out;
         NEW_PS.MEM_IR = PS.AGEX_IR;
         NEW_PS.MEM_V = PS.AGEX_V;
+        NEW_PS.MEM_DRID = PS.AGEX_DRID;
 
         /* The code below propagates the control signals from AGEX.CS latch
         to MEM.CS latch. */
@@ -1313,6 +1314,7 @@ void DE_stage() {
 /************************* FETCH_stage() *************************/
 void FETCH_stage() {
     
+    int save_pc_incriment = PC + 2;
     /* Perform I Cache access */
     int IR;
     icache_access(PC, &IR, &icache_r);
@@ -1343,7 +1345,7 @@ void FETCH_stage() {
     /* Evaluate and implement LD.DE signal */
     int de_v = (!stalled) && icache_r;
     if(!mem_stall && !dep_stall){
-        NEW_PS.DE_NPC = PC + 2;
+        NEW_PS.DE_NPC = save_pc_incriment;
         NEW_PS.DE_IR = IR;
         NEW_PS.DE_V =  de_v;
     }
