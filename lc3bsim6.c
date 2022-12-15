@@ -1,13 +1,13 @@
 /*
-    Name 1: Your Name
-    UTEID 1: Your UTEID
+    Name 1: Devangshu Goswami
+    UTEID 1: DG38764
 */
 
 /***************************************************************/
 /*                                                             */
 /*   LC-3b Simulator - Lab 6                                   */
 /*                                                             */
-/*   EE 460N -- Spring 2013                                    */
+/*   EE 460N -- Fall 2022                                      */
 /*   The University of Texas at Austin                         */
 /*                                                             */
 /***************************************************************/
